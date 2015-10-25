@@ -1,0 +1,114 @@
+---
+title: "Prediction Assignment"
+author: "Juan M Zambrano"
+date: "October 2015"
+output: html_document
+---
+
+#Project overview
+
+According to the project´s instructions:
+
+>Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the [website](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+The [training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [test](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) sets were provided.
+
+#Goal
+To use data from accelerometers on the belt, forearm, arm and dumbell of 6 participants asked to perform barbell lifts in 5 different ways to predict the way in which they did the excercise.
+
+# Initial data loading and creation of test and validation sets
+
+```{r Dataloading, warning=FALSE, message=FALSE}
+#First the packages that will be used are loaded
+library(caret)
+library(randomForest)
+library(class)
+library(nnet)
+
+#The training and test data sets are loaded
+pml.training <- read.csv("./pml-training.csv", row.names=1, stringsAsFactors = FALSE)
+pml.testing <- read.csv("./pml-testing.csv", row.names=1, stringsAsFactors = FALSE)
+
+#The supplied training set is subdivided into training and validation sets
+set.seed(1991991)
+traindata <- createDataPartition(pml.training$classe, p = 0.8, list = FALSE)
+training <- pml.training[traindata, ]
+validation <- pml.training[-traindata, ]
+
+```
+
+#Preprocessing
+
+For feature selection, several parameters were taken into account:
+
+Variable rule | Number of variables excluded for this reason
+----|----
+1. Descriptive variables were excluded from the analysis (i.e. variables that described the participant name, event time and date, etc.)| 6
+2. Variables that had less than 5% of values different from zero or NA were excluded | 106
+3. Variables with near nonzero variance were excluded.| 0
+```{r Preprocessing, cache=TRUE}
+#character descriptive variables 
+charvars <- c("user_name","raw_timestamp_part_1","raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+
+#variables with excess NA or black values
+nablankcount <- sapply(training, function(x) sum((is.na(x) | x == ""))) #counts the number of NA/blanks per column
+nablankcols <- names(nablankcount[nablankcount > 0.05*dim(training)[1]]) #names for variables with more than 5% NA/blank values
+training2 <- training[,!names(training) %in% c(charvars,nablankcols)]
+
+#variables with near zero variance
+near0var<- nearZeroVar(training2)
+if (length(near0var)> 0) training2<- training2[,-near0var]
+
+#The selected features are uptated to the validation set
+finalcols<-names(training2)
+validation2 <- validation[,names(training2)]
+
+```
+
+#Model fitting 
+After reviewing several of the machine learning techniques that were introduced in class, along with others observed while studying the options in the caret package, I decided to include 4 types of algorithms to compare and choose the one with the best accuracy in classification when evaluating the out-of-sample error with the validation set. That is, models with accuracy > 95%. The train algorithm within the caret package uses by default the accuracy and kappa parameters for model selection (cross validation).
+
+The first model attempted is a classification tree model:
+```{r classiftree, cache=TRUE}
+modFit <- train(as.factor(classe) ~ ., method ="rpart", data=training2, trControl = trainControl(method="cv"))
+ptraining <- predict(modFit, validation2)
+confusionMatrix(ptraining, validation2$classe)
+```
+As we can see, the accuracy is very low (48.71%); for this reason the model will be discarded.
+The second model is a single-hidden-layer neural network. We will use a maximum of 1000 iterations for time considerations.
+```{r neuralnetwork, cache=TRUE}
+modFit2 <- nnet(as.factor(classe)~., data=training2, size = 17, decay = 5e-4, maxit = 1000)
+ptraining2 <- predict(modFit2, validation2, type="class")
+confusionMatrix(ptraining2, validation2$classe)
+```
+As we can see, the accuracy has increased to 65.77%, however it is still unsatisfactory.
+The third model is a k-nearest neighbour classification, which for each row of the test set finds the k nearest training vectors and decides classification upon majority vote. Given the amount of data, I will use k=1. 
+```{r knn, cache=TRUE}
+ptraining3 <- knn(training2[,-53], validation2[,-53], training2[,53], k = 1, prob = FALSE, use.all = TRUE)
+confusionMatrix(ptraining3, validation2$classe)
+```
+The out-of-sample error has decreased significantly! This model gives us an accuracy of over 95%, to be exact 96.97%.
+Though we have achieved an acceptable performance, it is worth to try another algorithm, the random forest:
+```{r randomforest, cache=TRUE}
+modFit4 <- randomForest(as.factor(classe) ~ ., data = training2, importance = TRUE, ntrees = 10, trControl = trainControl(method="cv"))
+ptraining4 <- predict(modFit4, validation2)
+confusionMatrix(ptraining4, validation2$classe)
+```
+As we can see, this is the model with the highest accuracy, to be precise 99.44%. This is the model that I will choose for the predictions.
+
+#The final predictions
+In conclusion, there seem to be two models with an adequate level of accuracy (k-nearest neighbour and random forest algorithms). We can use these two to predict the test data and identify possible differences.
+```{r predictcomparison, cache=TRUE}
+test <- pml.testing[,names(pml.testing) %in% finalcols]
+knnpred <- knn(training2[,-53], test, training2[,53], k = 1, prob = FALSE, use.all = TRUE)
+rfpred <- predict(modFit4, test)
+setdiff(knnpred,rfpred)
+```
+There are no differences!
+For our purposes, we had decided on using the random forest model. The predictions are:
+```{r finalprediction}
+rfpred
+```
+with a model with an out of sample error of ~0.56%.
+
+
